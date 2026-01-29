@@ -1,82 +1,74 @@
-# Copyright 2023. All Rights Reserved.
-# Author: Bruce-Lee-LY
-# Date: 20:42:28 on Sun, Feb 12, 2023
-#
-# Description: cmake for cuda hgemm
+# =========== Modern CMake Start ===================
+cmake_minimum_required(VERSION 3.18) # 3.18+ 开始支持 CMAKE_CUDA_ARCHITECTURES
 
-cmake_minimum_required (VERSION 3.12)
+# 声明项目语言包含 CUDA，这会自动触发编译器的智能探测
+project(cuda_hgemm LANGUAGES CXX CUDA)
 
-project (cuda_hgemm LANGUAGES C CXX CUDA)
+# 1. 设置 C++ 和 CUDA 标准 (对应原脚本的 -std=c++11)
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CUDA_STANDARD 11)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-set (CMAKE_VERBOSE_MAKEFILE ${HGEMM_VERBOSE_MAKEFILE})
+# 2. 接收命令行参数
+# 对应脚本里的 -DHGEMM_VERBOSE_MAKEFILE
+set(CMAKE_VERBOSE_MAKEFILE ${HGEMM_VERBOSE_MAKEFILE})
 
-if (POLICY CMP0146)
-    cmake_policy (SET CMP0146 OLD) 
-endif ()
+# 设置 CUDA 架构 (默认为 86，也可以通过 cmake -DCMAKE_CUDA_ARCHITECTURES=80 覆盖)
+if(NOT CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 86)
+endif()
 
-find_program (CCACHE_FOUND ccache)
-if (CCACHE_FOUND)
-    set_property (GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
-    set_property (GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
-endif (CCACHE_FOUND)
-
-set (CMAKE_C_FLAGS "-std=c11")
-set (CMAKE_C_FLAGS_DEBUG "$ENV{CFLAGS} -O0 -g2 -ggdb")
-set (CMAKE_C_FLAGS_RELEASE "$ENV{CFLAGS} -O3")
-
-set (CMAKE_CXX_FLAGS "-std=c++11")
-set (CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -g2 -ggdb")
-set (CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O3")
-
-set (CMAKE_EXE_LINKER_FLAGS "-Wl,--as-needed")
-
-add_compile_options (
-    -Wall
-    -Werror
-    -Wextra
-    -Wswitch-default
-    -Wfloat-equal
-    -Wshadow
-    -Wcast-qual
-)
-
-# Nvidia GPU
-find_package (CUDA REQUIRED)
-# unset (CUDA_USE_STATIC_CUDA_RUNTIME CACHE)
-# option (CUDA_USE_STATIC_CUDA_RUNTIME OFF)
-
-set (CUDA_VERBOSE_BUILD ${HGEMM_VERBOSE_MAKEFILE})
-set (CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -std=c++11 -Xcompiler -fopenmp --expt-relaxed-constexpr")
-if (${CMAKE_BUILD_TYPE} MATCHES "Debug")
-    set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -arch=sm_${CMAKE_CUDA_ARCHITECTURES} -g -lineinfo -Xptxas=-v -O0")
-else ()
-    set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -gencode arch=compute_${CMAKE_CUDA_ARCHITECTURES},code=sm_${CMAKE_CUDA_ARCHITECTURES} --use_fast_math -O3")
-endif ()
-
-set (SYS_CUDART_PATH "/usr/local/cuda")
-set (SYS_CUDA_DRIVER_PATH "/usr/lib/x86_64-linux-gnu")
-
+# 3. 查找依赖包
+# 现代 CMake 使用 CUDAToolkit 来找 cuBLAS 等库，而不是 find_package(CUDA)
+find_package(CUDAToolkit REQUIRED) 
 find_package(gflags REQUIRED)
 find_package(OpenMP REQUIRED)
 
-include_directories (
-    ${PROJECT_SOURCE_DIR}/src/common
-    ${SYS_CUDART_PATH}/include
+# 4. 收集源文件 (保持原有逻辑)
+# 注意：Modern CMake 推荐显式列出文件，但为了方便你的现有结构，GLOB 依然可用
+file(GLOB HGEMM_SRCS 
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/wmma/*.cu"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/mma/*.cu"
+)
+
+# 5. 定义可执行文件 (关键变化！)
+# 不再使用 cuda_add_executable，直接用标准的 add_executable
+add_executable(hgemm ${HGEMM_SRCS})
+
+# 6. 设置编译选项 (关键变化！)
+# 这一步替换了原来复杂的 CUDA_NVCC_FLAGS 操作
+
+# 6.1 通用选项
+target_compile_options(hgemm PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>: -Wall -Werror -Wextra > # C++ 编译器的警告
+    $<$<COMPILE_LANGUAGE:CUDA>: --expt-relaxed-constexpr -Xcompiler -fopenmp > # NVCC 的选项
+    
+    # --- 核心修复：在这里优雅地解决 GCC 版本不兼容问题 ---
+    $<$<COMPILE_LANGUAGE:CUDA>: -allow-unsupported-compiler >
+)
+
+# 6.2 Debug / Release 特定选项
+# 使用生成器表达式自动判断 Build Type，无需 if-else
+target_compile_options(hgemm PRIVATE
+    $<$<CONFIG:Debug>: -g -lineinfo -Xptxas=-v -O0 >
+    $<$<CONFIG:Release>: --use_fast_math -O3 >
+)
+
+# 7. 设置包含目录
+target_include_directories(hgemm PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
     ${GFLAGS_INCLUDE_DIR}
+    # CUDA Include 目录会自动处理，不需要手动加 /usr/local/cuda/include
 )
 
-link_directories (
-    ${SYS_CUDART_PATH}/lib64
-    ${SYS_CUDA_DRIVER_PATH}
+# 8. 链接库 (关键变化！)
+target_link_libraries(hgemm PRIVATE
+    CUDA::cublas           # 现代写法：链接 cuBLAS
+    CUDA::cudart           # 链接 CUDA Runtime
+    OpenMP::OpenMP_CXX     # 链接 OpenMP
+    ${GFLAGS_LIBRARIES}    # 链接 gflags
 )
 
-file (GLOB HGEMM_SRCS 
-    ${PROJECT_SOURCE_DIR}/src/*.cu
-    ${PROJECT_SOURCE_DIR}/src/wmma/*.cu
-    ${PROJECT_SOURCE_DIR}/src/mma/*.cu
-)
-
-cuda_add_executable (hgemm ${HGEMM_SRCS})
-target_link_libraries (hgemm -lcublas OpenMP::OpenMP_CXX ${GFLAGS_LIBRARIES})
-
-install (TARGETS hgemm RUNTIME DESTINATION bin)
+# 9. 安装
+install(TARGETS hgemm RUNTIME DESTINATION bin)

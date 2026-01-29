@@ -4,6 +4,11 @@
 #
 # Description: compile script
 
+# usage: ./build.sh -a 86 -t Release -b OFF
+# run sample: ./run_sample.sh
+# profiling: cd tools/performance
+#            ./performance.sh
+
 #!/bin/bash
 
 set -euo pipefail
